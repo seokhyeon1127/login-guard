@@ -1,0 +1,41 @@
+name: Build & Release Plugin
+
+# 태그(v1.0.0 등)를 푸시하면 자동으로 플러그인 zip을 빌드하고 릴리스를 만듭니다.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # 릴리스 생성 권한
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: PHP 설치
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+
+      - name: PHP 문법 검사 (lint)
+        run: |
+          echo "PHP 파일 문법 검사를 시작합니다..."
+          find login-guard -name '*.php' -print0 | xargs -0 -n1 -P4 php -l
+
+      - name: 플러그인 zip 빌드
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "버전 $VERSION 빌드"
+          zip -r "login-guard-${VERSION}.zip" login-guard \
+            -x '*.DS_Store' -x '*/.git/*'
+          ls -la *.zip
+
+      - name: GitHub 릴리스 생성 + zip 첨부
+        uses: softprops/action-gh-release@v2
+        with:
+          files: login-guard-*.zip
+          generate_release_notes: true
