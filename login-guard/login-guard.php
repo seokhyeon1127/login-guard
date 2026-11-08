@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       로그인 가드 (Login Guard)
  * Plugin URI:        https://github.com/seokhyeon1127/login-guard
- * Description:       로그인 실패 횟수를 제한해 무차별 대입(brute-force) 공격을 막아주는 가벼운 보안 플러그인. 지정한 횟수(기본 5회) 이상 연속 실패하면 해당 IP의 로그인을 일정 시간(기본 10분) 차단합니다.
- * Version:           1.0.0
+ * Description:       로그인 실패 횟수 제한(무차별 대입 차단)과 사용자명 열거 방지로 WordPress 로그인을 지키는 가벼운 보안 플러그인. 지정한 횟수(기본 5회) 이상 연속 실패하면 해당 IP의 로그인을 일정 시간(기본 10분) 차단하고, 공격자가 유효한 아이디를 알아내지 못하도록 로그인 오류 메시지를 일반화하고 작성자(?author=N) 스캔을 차단합니다.
+ * Version:           1.1.0
  * Requires at least: 5.0
  * Requires PHP:      7.2
  * Author:            고석현
@@ -17,7 +17,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'LGUARD_VERSION', '1.0.0' );
+define( 'LGUARD_VERSION', '1.1.0' );
 define( 'LGUARD_LOG_TABLE', 'lguard_log' );
 
 /* ------------------------------------------------------------------ *
@@ -27,6 +27,7 @@ function lguard_activate() {
 	add_option( 'lguard_max_attempts', 5 );     // 허용 실패 횟수
 	add_option( 'lguard_lockout_minutes', 10 ); // 잠금 시간(분)
 	add_option( 'lguard_enabled', 1 );          // 사용 여부
+	add_option( 'lguard_hide_users', 1 );       // v1.1: 사용자명 열거 방지 사용 여부
 
 	global $wpdb;
 	$table   = $wpdb->prefix . LGUARD_LOG_TABLE;
@@ -124,6 +125,44 @@ function lguard_on_success( $user_login, $user ) {
 add_action( 'wp_login', 'lguard_on_success', 10, 2 );
 
 /* ------------------------------------------------------------------ *
+ *  v1.1 추가: 사용자명 열거 방지 (Username Enumeration Protection)
+ *  사용자 피드백("보안 말고는 별다른 차이가 없는듯")을 반영한 보안 기능.
+ * ------------------------------------------------------------------ */
+
+/**
+ * 로그인 실패 메시지를 일반화한다.
+ * 기본 WordPress는 "잘못된 아이디" vs "비밀번호 오류"를 구분해서 보여줘,
+ * 공격자가 "이 아이디는 존재한다"는 사실을 알아낼 수 있다(사용자 열거).
+ * → 하나의 일반 메시지로 통일해 아이디 존재 여부를 숨긴다.
+ * (단, '로그인 가드'의 잠금 안내 메시지는 그대로 둔다.)
+ */
+function lguard_generic_login_error( $error ) {
+	if ( ! get_option( 'lguard_hide_users', 1 ) ) { return $error; }
+	if ( is_string( $error ) &&
+	     ( strpos( $error, '로그인 차단' ) !== false || strpos( $error, '로그인이 제한' ) !== false ) ) {
+		return $error; // 잠금 안내는 유지
+	}
+	return '<strong>로그인 실패</strong><br>아이디 또는 비밀번호가 올바르지 않습니다.';
+}
+add_filter( 'login_errors', 'lguard_generic_login_error' );
+
+/**
+ * 작성자 스캔(?author=N) 차단.
+ * ?author=1 처럼 숫자를 넣으면 WordPress가 그 작성자의 글 목록으로 보내면서
+ * URL에 작성자 아이디(slug)를 노출한다 → 공격자가 유효 아이디를 수집(열거)한다.
+ * → 비로그인/프런트 요청에서 숫자 author 쿼리를 홈으로 돌려보내 차단한다.
+ */
+function lguard_block_author_scan() {
+	if ( ! get_option( 'lguard_hide_users', 1 ) || is_admin() ) { return; }
+	if ( isset( $_GET['author'] ) && preg_match( '/^\d+$/', (string) wp_unslash( $_GET['author'] ) ) ) {
+		lguard_log( 'enum_block', '', '사용자명 열거 시도 차단 (?author=' . intval( $_GET['author'] ) . ')' );
+		wp_safe_redirect( home_url( '/' ), 302 );
+		exit;
+	}
+}
+add_action( 'init', 'lguard_block_author_scan' );
+
+/* ------------------------------------------------------------------ *
  *  관리자 화면 (설정 + 로그)
  * ------------------------------------------------------------------ */
 function lguard_menu() {
@@ -138,6 +177,7 @@ function lguard_register_settings() {
 	register_setting( 'lguard_group', 'lguard_enabled', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
 	register_setting( 'lguard_group', 'lguard_max_attempts', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
 	register_setting( 'lguard_group', 'lguard_lockout_minutes', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
+	register_setting( 'lguard_group', 'lguard_hide_users', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
 }
 add_action( 'admin_init', 'lguard_register_settings' );
 
@@ -149,18 +189,20 @@ function lguard_render_page() {
 	$on    = (int) get_option( 'lguard_enabled', 1 );
 	$max   = (int) get_option( 'lguard_max_attempts', 5 );
 	$min   = (int) get_option( 'lguard_lockout_minutes', 10 );
+	$hide  = (int) get_option( 'lguard_hide_users', 1 );
 	?>
 	<div class="wrap">
 		<h1>🛡 로그인 가드 <span style="font-size:13px;color:#888">v<?php echo esc_html( LGUARD_VERSION ); ?></span></h1>
-		<p>로그인 실패 횟수를 제한해 무차별 대입 공격을 막습니다.</p>
+		<p>로그인 실패 횟수를 제한해 무차별 대입 공격을 막고, 사용자명 열거를 차단해 공격자가 유효한 아이디를 알아내지 못하게 합니다.</p>
 
 		<h2>설정</h2>
 		<form method="post" action="options.php">
 			<?php settings_fields( 'lguard_group' ); ?>
 			<table class="form-table">
-				<tr><th>사용</th><td><label><input type="checkbox" name="lguard_enabled" value="1" <?php checked( $on, 1 ); ?>> 로그인 보호 사용</label></td></tr>
+				<tr><th>로그인 횟수 제한</th><td><label><input type="checkbox" name="lguard_enabled" value="1" <?php checked( $on, 1 ); ?>> 사용 (무차별 대입 차단)</label></td></tr>
 				<tr><th>허용 실패 횟수</th><td><input type="number" min="1" name="lguard_max_attempts" value="<?php echo esc_attr( $max ); ?>"> 회</td></tr>
 				<tr><th>잠금 시간</th><td><input type="number" min="1" name="lguard_lockout_minutes" value="<?php echo esc_attr( $min ); ?>"> 분</td></tr>
+				<tr><th>사용자명 열거 방지 <span style="color:#2271b1">(v1.1 신규)</span></th><td><label><input type="checkbox" name="lguard_hide_users" value="1" <?php checked( $hide, 1 ); ?>> 사용 (로그인 오류 메시지 일반화 + 작성자 스캔 차단)</label></td></tr>
 			</table>
 			<?php submit_button(); ?>
 		</form>
