@@ -7,11 +7,15 @@ WordPress 로그인 창을 노리는 **무차별 대입(brute-force) 공격**을
 > 실제 사용자 여러분의 피드백을 받아 **1~2주마다 버전을 개선**하며 운영합니다.
 > **[👉 참여하고 피드백 남기기](https://seokhyeon1127.github.io/login-guard/)** (추첨을 통해 커피 기프티콘 증정!)
 
-## ✨ 기능 (v1.0.0)
-- 로그인 실패 횟수 제한 → 임계치 초과 시 IP 자동 잠금
-- 허용 실패 횟수 / 잠금 시간 설정
-- 로그인 실패·잠금·차단 이벤트 **보안 로그**
-- 삭제 시 옵션·로그 테이블 자동 정리(흔적 없음)
+## ✨ 기능 (v1.2.0)
+최근 WordPress 공격 흐름에 맞춰, 플러그인 레벨 하드닝을 한곳에 모았습니다. 모든 항목 토글 가능.
+- **로그인 횟수 제한** → 임계치 초과 시 IP 자동 잠금(무차별 대입 차단)
+- **사용자명 열거 방지** → 로그인 오류 일반화 + 작성자(?author=N)·REST(/wp-json/.../users) 스캔 차단
+- **XML-RPC 비활성화** → 무차별 대입 증폭·pingback 악용 차단
+- **보안 HTTP 헤더** → X-Frame-Options, X-Content-Type-Options, Referrer-Policy
+- **버전 정보 숨김** → generator·ver= 제거로 핑거프린팅 축소
+- **파일 편집 비활성화** → 관리자 탈취 시 코드 변조 방지
+- 모든 방어 이벤트 **보안 로그** + 삭제 시 데이터 자동 정리
 
 ## 📥 설치
 1. [Releases](https://github.com/seokhyeon1127/login-guard/releases)에서 최신 `login-guard-x.y.z.zip` 다운로드

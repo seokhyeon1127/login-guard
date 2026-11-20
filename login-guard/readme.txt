@@ -4,11 +4,11 @@ Tags: login, security, brute force, login attempts, lockout
 Requires at least: 5.0
 Tested up to: 6.5
 Requires PHP: 7.2
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-로그인 실패 횟수 제한(무차별 대입 차단)과 사용자명 열거 방지로 WordPress 로그인을 지키는 가벼운 보안 플러그인입니다.
+최근 WordPress 공격 흐름에 맞춰, 플러그인에서 할 수 있는 보안 하드닝을 한곳에 모은 가벼운 플러그인입니다.
 
 == Description ==
 
@@ -39,6 +39,12 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 실제 IP 식별 방식이 다를 수 있습니다(향후 버전에서 옵션 제공 예정).
 
 == Changelog ==
+
+= 1.2.0 =
+* 사용자 피드백("기능이 너무 적어서 아쉬웠다")을 반영해 최근 공격 흐름 기반 하드닝 모음으로 확장.
+* 신규: XML-RPC 비활성화, 보안 HTTP 헤더(X-Frame-Options 등), WordPress 버전 정보 숨김, 대시보드 파일 편집 비활성화.
+* 사용자명 열거 방지에 REST(/wp-json/wp/v2/users) 비로그인 차단 추가.
+* 설정 화면을 '로그인 보호 / 추가 하드닝' 두 묶음으로 정리, 모든 항목 토글 가능(체크 해제 저장 가능).
 
 = 1.1.0 =
 * 사용자 피드백("보안 말고는 별다른 차이가 없는듯") 반영.

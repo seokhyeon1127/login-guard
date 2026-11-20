@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       로그인 가드 (Login Guard)
  * Plugin URI:        https://github.com/seokhyeon1127/login-guard
- * Description:       로그인 실패 횟수 제한(무차별 대입 차단)과 사용자명 열거 방지로 WordPress 로그인을 지키는 가벼운 보안 플러그인. 지정한 횟수(기본 5회) 이상 연속 실패하면 해당 IP의 로그인을 일정 시간(기본 10분) 차단하고, 공격자가 유효한 아이디를 알아내지 못하도록 로그인 오류 메시지를 일반화하고 작성자(?author=N) 스캔을 차단합니다.
- * Version:           1.1.0
+ * Description:       최근 WordPress 공격 흐름에 맞춰, 플러그인 레벨에서 할 수 있는 보안 하드닝을 한곳에 모은 가벼운 플러그인입니다. 무차별 대입 차단(로그인 횟수 제한), 사용자명 열거 방지(로그인 오류 일반화·작성자/REST 스캔 차단), XML-RPC 비활성화, 보안 HTTP 헤더, 버전 정보 숨김, 대시보드 파일 편집 비활성화를 토글로 제공합니다.
+ * Version:           1.2.0
  * Requires at least: 5.0
  * Requires PHP:      7.2
  * Author:            고석현
@@ -17,7 +17,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'LGUARD_VERSION', '1.1.0' );
+define( 'LGUARD_VERSION', '1.2.0' );
 define( 'LGUARD_LOG_TABLE', 'lguard_log' );
 
 /* ------------------------------------------------------------------ *
@@ -28,6 +28,10 @@ function lguard_activate() {
 	add_option( 'lguard_lockout_minutes', 10 ); // 잠금 시간(분)
 	add_option( 'lguard_enabled', 1 );          // 사용 여부
 	add_option( 'lguard_hide_users', 1 );       // v1.1: 사용자명 열거 방지 사용 여부
+	add_option( 'lguard_disable_xmlrpc', 1 );   // v1.2: XML-RPC 비활성화
+	add_option( 'lguard_security_headers', 1 ); // v1.2: 보안 HTTP 헤더
+	add_option( 'lguard_hide_version', 1 );     // v1.2: WordPress 버전 정보 숨김
+	add_option( 'lguard_disable_file_edit', 1 );// v1.2: 대시보드 파일 편집 비활성화
 
 	global $wpdb;
 	$table   = $wpdb->prefix . LGUARD_LOG_TABLE;
@@ -162,6 +166,66 @@ function lguard_block_author_scan() {
 }
 add_action( 'init', 'lguard_block_author_scan' );
 
+/**
+ * REST API 사용자 열거 차단.
+ * 비로그인 상태에서 /wp-json/wp/v2/users 로 전체 사용자(아이디/슬러그)를
+ * 긁어가는 것을 막는다. (작성자 스캔과 함께 열거 경로를 모두 닫는다)
+ */
+function lguard_block_rest_user_enum( $result, $server, $request ) {
+	if ( ! get_option( 'lguard_hide_users', 1 ) ) { return $result; }
+	if ( ! empty( $result ) ) { return $result; }
+	if ( is_object( $request ) && ! is_user_logged_in() ) {
+		$route = $request->get_route();
+		if ( preg_match( '#^/wp/v2/users#', (string) $route ) ) {
+			lguard_log( 'enum_block', '(비로그인)', 'REST 사용자 열거 차단 (' . $route . ')' );
+			return new WP_Error( 'lguard_rest_forbidden', '로그인 후 이용할 수 있습니다.', array( 'status' => 401 ) );
+		}
+	}
+	return $result;
+}
+add_filter( 'rest_pre_dispatch', 'lguard_block_rest_user_enum', 10, 3 );
+
+/* ------------------------------------------------------------------ *
+ *  v1.2 추가: 보안 하드닝 모음 (Security Hardening)
+ *  사용자 피드백("기능이 너무 적어 아쉬웠다")을 반영해, 최근 WordPress 공격
+ *  흐름(무차별 대입·열거·XML-RPC·핑거프린팅)에 맞춘 하드닝을 추가.
+ *  각 항목은 설정에서 켜고 끌 수 있다.
+ * ------------------------------------------------------------------ */
+
+/** (1) XML-RPC 비활성화 — 무차별 대입 증폭·pingback 공격에 악용되는 통로를 막는다. */
+if ( get_option( 'lguard_disable_xmlrpc', 1 ) ) {
+	add_filter( 'xmlrpc_enabled', '__return_false' );
+}
+
+/** (2) 보안 HTTP 헤더 — 클릭재킹/MIME 스니핑 등 흔한 브라우저 측 공격을 줄인다. */
+function lguard_security_headers() {
+	if ( ! get_option( 'lguard_security_headers', 1 ) ) { return; }
+	if ( headers_sent() ) { return; }
+	header( 'X-Frame-Options: SAMEORIGIN' );
+	header( 'X-Content-Type-Options: nosniff' );
+	header( 'Referrer-Policy: strict-origin-when-cross-origin' );
+}
+add_action( 'send_headers', 'lguard_security_headers' );
+
+/** (3) WordPress 버전 정보 숨김 — 공격자의 버전 핑거프린팅을 어렵게 한다. */
+if ( get_option( 'lguard_hide_version', 1 ) ) {
+	remove_action( 'wp_head', 'wp_generator' );
+	add_filter( 'the_generator', '__return_empty_string' );
+	$lguard_strip_ver = function ( $src ) {
+		if ( $src && strpos( $src, 'ver=' ) !== false ) {
+			$src = remove_query_arg( 'ver', $src );
+		}
+		return $src;
+	};
+	add_filter( 'style_loader_src', $lguard_strip_ver, 9999 );
+	add_filter( 'script_loader_src', $lguard_strip_ver, 9999 );
+}
+
+/** (4) 대시보드 파일 편집 비활성화 — 관리자 계정 탈취 시 코드 변조를 막는다. */
+if ( get_option( 'lguard_disable_file_edit', 1 ) && ! defined( 'DISALLOW_FILE_EDIT' ) ) {
+	define( 'DISALLOW_FILE_EDIT', true );
+}
+
 /* ------------------------------------------------------------------ *
  *  관리자 화면 (설정 + 로그)
  * ------------------------------------------------------------------ */
@@ -178,6 +242,10 @@ function lguard_register_settings() {
 	register_setting( 'lguard_group', 'lguard_max_attempts', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
 	register_setting( 'lguard_group', 'lguard_lockout_minutes', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
 	register_setting( 'lguard_group', 'lguard_hide_users', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
+	register_setting( 'lguard_group', 'lguard_disable_xmlrpc', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
+	register_setting( 'lguard_group', 'lguard_security_headers', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
+	register_setting( 'lguard_group', 'lguard_hide_version', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
+	register_setting( 'lguard_group', 'lguard_disable_file_edit', array( 'type' => 'integer', 'sanitize_callback' => 'absint' ) );
 }
 add_action( 'admin_init', 'lguard_register_settings' );
 
@@ -190,19 +258,50 @@ function lguard_render_page() {
 	$max   = (int) get_option( 'lguard_max_attempts', 5 );
 	$min   = (int) get_option( 'lguard_lockout_minutes', 10 );
 	$hide  = (int) get_option( 'lguard_hide_users', 1 );
+	$xrpc  = (int) get_option( 'lguard_disable_xmlrpc', 1 );
+	$hdr   = (int) get_option( 'lguard_security_headers', 1 );
+	$ver   = (int) get_option( 'lguard_hide_version', 1 );
+	$fedit = (int) get_option( 'lguard_disable_file_edit', 1 );
 	?>
 	<div class="wrap">
 		<h1>🛡 로그인 가드 <span style="font-size:13px;color:#888">v<?php echo esc_html( LGUARD_VERSION ); ?></span></h1>
-		<p>로그인 실패 횟수를 제한해 무차별 대입 공격을 막고, 사용자명 열거를 차단해 공격자가 유효한 아이디를 알아내지 못하게 합니다.</p>
+		<p>최근 WordPress 공격 흐름에 맞춰, 플러그인에서 할 수 있는 보안 하드닝을 한곳에 모았습니다. 각 항목을 켜고 끌 수 있어요.</p>
 
 		<h2>설정</h2>
 		<form method="post" action="options.php">
 			<?php settings_fields( 'lguard_group' ); ?>
+
+			<h3 style="margin-bottom:0">① 로그인 보호</h3>
 			<table class="form-table">
-				<tr><th>로그인 횟수 제한</th><td><label><input type="checkbox" name="lguard_enabled" value="1" <?php checked( $on, 1 ); ?>> 사용 (무차별 대입 차단)</label></td></tr>
+				<tr><th>로그인 횟수 제한</th><td>
+					<input type="hidden" name="lguard_enabled" value="0">
+					<label><input type="checkbox" name="lguard_enabled" value="1" <?php checked( $on, 1 ); ?>> 사용 (무차별 대입 차단)</label></td></tr>
 				<tr><th>허용 실패 횟수</th><td><input type="number" min="1" name="lguard_max_attempts" value="<?php echo esc_attr( $max ); ?>"> 회</td></tr>
 				<tr><th>잠금 시간</th><td><input type="number" min="1" name="lguard_lockout_minutes" value="<?php echo esc_attr( $min ); ?>"> 분</td></tr>
-				<tr><th>사용자명 열거 방지 <span style="color:#2271b1">(v1.1 신규)</span></th><td><label><input type="checkbox" name="lguard_hide_users" value="1" <?php checked( $hide, 1 ); ?>> 사용 (로그인 오류 메시지 일반화 + 작성자 스캔 차단)</label></td></tr>
+			</table>
+
+			<h3 style="margin-bottom:0">② 추가 하드닝</h3>
+			<table class="form-table">
+				<tr><th>사용자명 열거 방지</th><td>
+					<input type="hidden" name="lguard_hide_users" value="0">
+					<label><input type="checkbox" name="lguard_hide_users" value="1" <?php checked( $hide, 1 ); ?>> 사용</label>
+					<p class="description">로그인 오류 메시지 일반화 + 작성자(?author=N)·REST(/wp-json/.../users) 스캔 차단</p></td></tr>
+				<tr><th>XML-RPC 비활성화</th><td>
+					<input type="hidden" name="lguard_disable_xmlrpc" value="0">
+					<label><input type="checkbox" name="lguard_disable_xmlrpc" value="1" <?php checked( $xrpc, 1 ); ?>> 사용</label>
+					<p class="description">무차별 대입 증폭·pingback 악용 통로 차단. (Jetpack·워드프레스 모바일 앱을 쓴다면 끄세요)</p></td></tr>
+				<tr><th>보안 HTTP 헤더</th><td>
+					<input type="hidden" name="lguard_security_headers" value="0">
+					<label><input type="checkbox" name="lguard_security_headers" value="1" <?php checked( $hdr, 1 ); ?>> 사용</label>
+					<p class="description">X-Frame-Options·X-Content-Type-Options·Referrer-Policy 추가 (클릭재킹·MIME 스니핑 방지)</p></td></tr>
+				<tr><th>버전 정보 숨김</th><td>
+					<input type="hidden" name="lguard_hide_version" value="0">
+					<label><input type="checkbox" name="lguard_hide_version" value="1" <?php checked( $ver, 1 ); ?>> 사용</label>
+					<p class="description">WordPress 버전 노출(generator·ver=) 제거로 핑거프린팅 축소</p></td></tr>
+				<tr><th>파일 편집 비활성화</th><td>
+					<input type="hidden" name="lguard_disable_file_edit" value="0">
+					<label><input type="checkbox" name="lguard_disable_file_edit" value="1" <?php checked( $fedit, 1 ); ?>> 사용</label>
+					<p class="description">대시보드의 플러그인/테마 코드 편집기 비활성화 (관리자 탈취 시 코드 변조 방지)</p></td></tr>
 			</table>
 			<?php submit_button(); ?>
 		</form>
